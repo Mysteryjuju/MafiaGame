@@ -1,0 +1,6 @@
+# Files and folders to ignore
+.idea/
+venv/
+__pycache__/
+
+bot.token
