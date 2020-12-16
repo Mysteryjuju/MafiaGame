@@ -27,9 +27,12 @@ async def on_message(message):
             # Start game, only accept custom nicknames
             if message.content.startswith('-') and len(message.content) > 1:
                 bot.mafia_engine.set_player_nickname(message)
-        elif game_state == GameState.state_day_discussion:
-            bot.mafia_engine.manage_day_discussion(message)
-        elif game_state == GameState.state_day_trial_defense:
+        elif game_state in [GameState.state_day_discussion,
+                            GameState.state_day_vote,
+                            GameState.state_day_trial_deliberation]:
+            bot.mafia_engine.manage_day_common(message)
+        elif game_state in [GameState.state_day_trial_defense,
+                            GameState.state_day_trial_last_words]:
             bot.mafia_engine.manage_day_trial_defense(message)
         elif game_state == GameState.state_night:
             bot.mafia_engine.manage_night(message)

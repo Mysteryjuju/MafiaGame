@@ -37,6 +37,7 @@ class MafiaEngine:
         self.mason_players = []
 
         self.player_trial = None
+        self._player_skips = list()
 
     def reset_game(self):
         self._game_state = None
@@ -131,6 +132,17 @@ class MafiaEngine:
                 return player
         raise Exception("Player not found at house {}.".format(house_id))
 
+    def check_day_skip(self, player: Player):
+        # Add player to skippers
+        if player not in self._player_skips:
+            self._player_skips.append(player)
+            self.send_message_everyone("*# {} souhaite passer la journée.*".format(player.get_nickname()))
+        if len(self._player_skips) > math.ceil(self.get_nb_alive_players()/2):
+            # Reset count and go to night now !
+            self._player_skips = list()
+            self._game_state.disable_next_state()
+            self._game_state.night()
+
     def get_current_votes(self) -> dict:
         """
         Get a compilation of all current votes
@@ -147,15 +159,23 @@ class MafiaEngine:
                     current_votes[voted_player.get_house().get_id()] = 1
         return current_votes
 
+    def get_nb_alive_players(self) -> int:
+        """
+        Get the number of current alive players
+        :return: number of current alive players
+        """
+        alive_players = 0
+        for player in self.players:
+            if player.is_player_alive():
+                alive_players += 1
+        return alive_players
+
     def check_votes_for_trial(self):
         """
         Check votes and go to trial if needed.
         """
         # Compute minimum votes to go to trial
-        alive_players = 0
-        for player in self.players:
-            if player.is_player_alive():
-                alive_players += 1
+        alive_players = self.get_nb_alive_players()
         votes_threshold = math.ceil(alive_players/2)
         # Check for each voted players if required votes are reached
         current_votes = self.get_current_votes()
@@ -163,132 +183,14 @@ class MafiaEngine:
             if current_votes[house_id] > votes_threshold:
                 # Go to trial !
                 self.player_trial = self.get_player_from_house_id(house_id)
+                # Stop timer of night transition
+                self._game_state.disable_next_state()
+                # Go to trial !
                 self._game_state.day_trial_launch()
                 # Break the loop to stop check
                 break
 
-    # def _manage_generic_commands(self, message, player):
-    #     # Manage "last will" command
-    #     if message.content.startswith('-lw'):
-    #         if len(message.content) > 4 and message.content.startswith("-lw "):
-    #             # Configure a new last will
-    #             player.set_last_will(message.content[4:])
-    #         if player.get_last_will() is not None:
-    #             # Display the player last will for information
-    #             player.send_message_to_player("*## Votre dernière volonté : {}*".format(player.get_last_will()))
-    #         else:
-    #             player.send_message_to_player("*## Pas de dernière volonté configurée.*")
-    #
-    #     # Manage "death note" command
-    #     elif message.content.startswith('-dn'):
-    #         if len(message.content) > 4 and message.content.startswith("-dn "):
-    #             # Configure a new death note
-    #             player.set_death_note(message.content[4:])
-    #         if player.get_death_note() is not None:
-    #             # Display the player death note for information
-    #             player.send_message_to_player("*## Votre death note : {}*".format(player.get_death_note()))
-    #         else:
-    #             player.send_message_to_player("*## Pas de death note configurée.*")
-    #
-    #     # Manage "votes" command
-    #     elif message.content == '-votes':
-    #         # Display a list of all votes
-    #         current_votes = self._get_current_votes()
-    #         if len(current_votes) == 0:
-    #             player.send_message_to_player("*## Personne n'a voté.*")
-    #         else:
-    #             msg = "*## Votes en cours :*\n"
-    #             for house_id in sorted(current_votes):
-    #                 msg += "*## {} - **{}** : {} vote{}*\n".format(
-    #                     house_id,
-    #                     self.get_player_from_house_id(house_id).get_nickname(),
-    #                     current_votes[house_id],
-    #                     "s" if current_votes[house_id] > 1 else ""
-    #                 )
-    #             player.send_message_to_player(msg)
-    #
-    #     # Manage "vote" command
-    #     elif message.content.startswith('-vote'):
-    #         # The player want to vote, display all available votes
-    #         votable_players = list()
-    #         list_vote_players = ""
-    #         for item in self.players:
-    #             if item.is_player_alive() and item != player:
-    #                 list_vote_players += "*## {} - {}*\n".format(item.get_house().get_id(), item.get_nickname())
-    #                 votable_players.append(item)
-    #
-    #         if message.content.startswith('-vote ') and len(message.content) > 6:
-    #             vote = message.content[6:]
-    #             if vote.isdigit() and int(vote) in [i.get_house().get_id() for i in votable_players]:
-    #                 # Vote OK
-    #                 player.set_vote_id(int(vote))
-    #                 msg = "```diff\n-> {} a voté contre {}.\n```" \
-    #                     .format(player.get_nickname()[2:-2],
-    #                             self.get_player_from_house_id(int(vote)).get_nickname()[2:-2])
-    #                 self.send_message_everyone(msg)
-    #             else:
-    #                 # Wrong vote
-    #                 output = "*## Vote impossible. Vous pouvez voter contre un joueur de cette liste (utilisez le numéro) :*\n" \
-    #                          + list_vote_players
-    #                 player.send_message_to_player(output)
-    #         else:
-    #             if player.get_vote_id() is None:
-    #                 output = "*## Votez contre un joueur (utilisez le numéro) :*\n" + list_vote_players
-    #                 player.send_message_to_player(output)
-    #             else:
-    #                 player.set_vote_id(None)
-    #                 self.send_message_everyone("*{} a annulé son vote.*".format(player.get_nickname()))
-    #         # Check if votes can launch a trial
-    #         self._check_votes_for_trial()
-    #
-    #     # Manage "graveyard/cimetiere/cimetière" command
-    #     elif message.content == "-graveyard" or message.content == "-cimetiere":
-    #         # Display all dead players
-    #         print("TO IMPLEMENT !")
-    #
-    #     # Manage "role" command
-    #     elif message.content.startswith("-role"):
-    #         if message.content == "-role":
-    #             player.get_role().print_role(player.send_message_embed)
-    #         elif message.content == "-roles":
-    #             print("TODO: implement a feature to return possible roles in the game")
-    #         else:
-    #             output = re.findall(r"-role (.+)", message.content)
-    #             if len(output) != 1:
-    #                 player.send_message_to_player("*## Commande invalide de récupération de role.*")
-    #             else:
-    #                 # Get the role
-    #                 role_class = get_role_class_from_string(output[0])
-    #                 if role_class is not None:
-    #                     role_class().print_role(player.send_message_embed)
-    #                 else:
-    #                     player.send_message_to_player("*## Role demandé inconnu.*")
-    #
-    #     # Manage "pm" command
-    #     elif message.content.startswith("-pm"):
-    #         output = re.findall(r"^-pm ([\d]+) (.+)$", message.content)
-    #         if len(output) != 1:
-    #             player.send_message_to_player("*## Commande de message privé invalide.*")
-    #         else:
-    #             target_id = int(output[0][0])
-    #             private_msg = output[0][1]
-    #             # Check if target player is not the author player
-    #             if player.get_house().get_id() == target_id:
-    #                 player.send_message_to_player("*## Vous ne pouvez pas vous envoyer à vous-même un message privé.*")
-    #             else:
-    #                 for item in self.players:
-    #                     if item.get_house().get_id() in [target_id, player.get_house().get_id()]:
-    #                         msg = "**## MESSAGE PRIVE ##** {} - **{}** : {}".format(player.get_house().get_id(),
-    #                                                                                 player.get_nickname(),
-    #                                                                                 private_msg)
-    #                         item.send_message_to_player(msg)
-    #                     else:
-    #                         msg = "**{}** a envoyé un message privé à **{}**." \
-    #                             .format(player.get_nickname(),
-    #                                     self.get_player_from_house_id(target_id).get_nickname())
-    #                         item.send_message_to_player(msg)
-
-    def manage_day_discussion(self, message):
+    def manage_day_common(self, message):
         player = self.get_player_from_message(message)
         # Manage commands
         if message.content.startswith('-'):
@@ -303,7 +205,7 @@ class MafiaEngine:
             self._cmd_manager.manage_command(message, player)
         else:
             if player == self.player_trial:
-                self.player_send_message_to_players(message, self.mafia_players)
+                self.player_send_message_to_players(message, self.players)
 
     def manage_day_trial_deliberation(self, message):
         player = self.get_player_from_message(message)
@@ -333,7 +235,7 @@ class MafiaEngine:
             await ctx.send("Impossible de lancer une nouvelle partie. Partie déjà en cours.")
         else:
             # Display message game start
-            await ctx.send("Nouvelle partie de Mafia démarrée par {}. Pour rejoindre, tappez \"$join_game\""
+            await ctx.send("Nouvelle partie de Mafia démarrée par {}. Pour rejoindre, tapez \"$join_game\""
                            .format(ctx.author.name))
             # Clean variables
             self.reset_game()
@@ -374,7 +276,7 @@ class MafiaEngine:
             self.players.append(new_player)
             self.private_channels.append(new_player.get_private_channel())
 
-            ##############################################################################################################
+            ############################################################################################################
             # TODO: DEBUG
             if ctx.author.name == "Mystery":
                 from mafia.fakeplayer import FakePlayer
@@ -384,7 +286,7 @@ class MafiaEngine:
                     self.players.append(new_player)
                     self.private_channels.append(new_player.get_private_channel())
             # TODO: DEBUG
-            ##############################################################################################################
+            ############################################################################################################
 
         else:
             await ctx.send("{} - partie en cours, impossible de rejoindre.".format(ctx.author.name))

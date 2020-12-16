@@ -8,10 +8,7 @@ import math
 import asyncio
 from statemachine import StateMachine, State
 from threading import Thread
-from mafia.misc.utils import Misc, Timers
-
-# TODO: FOR DEBUG PURPOSES
-from mafia.fakeplayer import FakePlayer
+from mafia.misc.utils import Misc, Timers, Alignment
 
 
 class DelayedOperation(Thread):
@@ -63,16 +60,6 @@ class DelayedOperation(Thread):
 class GameState(StateMachine):
     """
     Game engine to handler games session
-
-    # Game steps
-    # Players join
-    # Players configure custom names
-    # Dispatch roles
-    # Roulement des jours:
-    ## Day 1, only speaking
-    ## Night 1, tchats for some players, prepare actions
-    ## Day 2, speaking
-    ## Night 2, ...
     """
 
     # Game states
@@ -80,10 +67,14 @@ class GameState(StateMachine):
     state_players_nicknames = State('PlayersNicknames')
     state_configure_players = State('ConfigurePlayers')
     state_day_discussion = State('DayDiscussion')
+    state_day_vote = State('DayDiscussion')
     state_day_trial_launch = State('DayTrialLaunch')
     state_day_trial_defense = State('DayTrialDefense')
     state_day_trial_deliberation = State('DayTrialDeliberation')
     state_day_trial_verdict = State('DayTrialVerdict')
+    state_day_trial_last_words = State('DayTrialLastWords')
+    state_day_trial_kill = State('DayTrialKill')
+    state_day_end = State('DayEnd')
     state_night = State("Night")
     state_night_sequence = State("NightSequence")
 
@@ -96,15 +87,16 @@ class GameState(StateMachine):
     select_names = state_wait_for_players.to(state_players_nicknames)
     configure_players = state_players_nicknames.to(state_configure_players)
     day_discussion = state_day_discussion.from_(state_configure_players, state_night_sequence)
-    day_trial_launch = state_day_discussion.to(state_day_trial_launch)
+    day_vote = state_day_vote.from_(state_day_discussion, state_day_trial_verdict)
+    day_trial_launch = state_day_vote.to(state_day_trial_launch)
     day_trial_defense = state_day_trial_launch.to(state_day_trial_defense)
     day_trial_deliberation = state_day_trial_defense.to(state_day_trial_deliberation)
     day_trial_verdict = state_day_trial_deliberation.to(state_day_trial_verdict)
+    day_trial_last_words = state_day_trial_verdict.to(state_day_trial_last_words)
+    day_trial_kill = state_day_trial_last_words.to(state_day_trial_kill)
+    day_end = state_day_end.from_(state_day_discussion, state_day_vote, state_day_trial_kill)
 
-    # TODO: un état transitoire court à ajouter pour ajouter de la tempo ?
-    # end_of_day =
-
-    night = state_night.from_(state_day_discussion)
+    night = state_night.from_(state_day_end)
     night_sequence = state_night.to(state_night_sequence)
 
     def __init__(self, bot, mafia_engine):
@@ -118,6 +110,13 @@ class GameState(StateMachine):
     def _send_message(self, message):
         channel = self._bot.get_channel(775453457708482622)
         asyncio.run_coroutine_threadsafe(channel.send(message), self._loop)
+
+    def disable_next_state(self):
+        """
+        Used to disable configured next state
+        """
+        if self._next_state is not None:
+            self._next_state.disable()
 
     def on_reset(self):
         """
@@ -172,9 +171,25 @@ class GameState(StateMachine):
         self._mafia_engine.send_message_everyone("**JOUR {}** - Discussion - {} secondes"
                                                  .format(self._current_day, Timers.TIME_DAY_CHAT))
 
+        if self._current_day == 1:
+            next_state = self.day_end
+        else:
+            next_state = self.day_vote
         self._next_state = DelayedOperation(Timers.TIME_DAY_CHAT,
-                                            self.night,
+                                            next_state,
                                             "Discussion",
+                                            self._mafia_engine.send_message_everyone)
+        self._next_state.start()
+
+    def on_day_vote(self):
+        """
+        Called when state_day_vote state is set
+        """
+        print("on_day_vote")
+        self._mafia_engine.send_message_everyone("*Vous pouvez désormais voter pour démarrer un procès (utilisez '-vote X' pour voter contre quelqu'un).*")
+        self._next_state = DelayedOperation(Timers.TIME_DAY_VOTE,
+                                            self.day_end,
+                                            "Vote",
                                             self._mafia_engine.send_message_everyone)
         self._next_state.start()
 
@@ -204,7 +219,7 @@ class GameState(StateMachine):
         Called when state_day_trial_defense state is set
         """
         time.sleep(1.0)
-        msg = "***{}**, vous êtes jugé pour conspiration contre la ville. Quelle est votre défense ?* - {} secondes"\
+        msg = "*{}, vous êtes jugé pour conspiration contre la ville. Quelle est votre défense ?* - {} secondes"\
             .format(self._mafia_engine.player_trial.get_nickname(), Timers.TIME_DAY_TRIAL_DEFENSE)
         self._mafia_engine.send_message_everyone(msg)
 
@@ -217,7 +232,7 @@ class GameState(StateMachine):
         """
         Called when state_day_trial_deliberation state is set
         """
-        msg = "*La ville doit maintenant déterminer le sort de **{}**. '-innocent' pour innocent, '-guilty' pour coupable.* - {} secondes"\
+        msg = "*La ville doit maintenant déterminer le sort de {}. '-innocent' pour innocent, '-guilty' pour coupable, '-cancel' pour annuler.* - {} secondes"\
             .format(self._mafia_engine.player_trial.get_nickname(), Timers.TIME_DAY_TRIAL_DELIBERATION)
         self._mafia_engine.send_message_everyone(msg)
 
@@ -225,20 +240,122 @@ class GameState(StateMachine):
                                             self.day_trial_verdict)
         self._next_state.start()
 
+    def _on_day_trial_verdict_operations(self):
+        """
+        Function to run the trial verdict
+        """
+        self._mafia_engine.send_message_everyone("*Fin des délibérations*")
+        self._mafia_engine.send_message_everyone(Misc.STATES_STRING_SEPARATOR)
+        time.sleep(2.0)
+        self._mafia_engine.send_message_everyone("*Le procès est terminé. Les votes vont être comptés.*")
+        time.sleep(2.0)
+
+        # Compute the verdict
+        guilty = 0
+        innocent = 0
+        verdict_msg = ""
+        for player in self._mafia_engine.players:
+            player_vote = player.get_trial_vote()
+            if player_vote == Misc.TRIAL_GUILTY:
+                guilty += 1
+                verdict_msg += "*[{} a voté **Coupable**]*\n".format(player.get_nickname())
+            elif player_vote == Misc.TRIAL_INNOCENT:
+                innocent += 1
+                verdict_msg += "*[{} a voté **Innocent**]*\n".format(player.get_nickname())
+            else:
+                verdict_msg += "*[{} s'est abstenu]*\n".format(player.get_nickname())
+
+        if guilty > innocent:
+            # Execute the player
+            verdict_msg = "*La ville a décidé de lyncher {} par un vote de {} coupable(s) contre {} innocent(s).*\n"\
+                .format(self._mafia_engine.player_trial.get_nickname(), guilty, innocent) + verdict_msg
+            self._mafia_engine.send_message_everyone(verdict_msg)
+            # Kill the player !
+            self.day_trial_last_words()
+        else:
+            # Player saved by the town
+            verdict_msg = "*La ville a décidé de sauver {} par un vote de {} coupable(s) contre {} innocent(s).*\n"\
+                .format(self._mafia_engine.player_trial.get_nickname(), guilty, innocent) + verdict_msg
+            self._mafia_engine.send_message_everyone(verdict_msg)
+            self._mafia_engine.player_trial = None
+            time.sleep(2.0)
+            # Return to day_vote
+            self.day_vote()
+
     def on_day_trial_verdict(self):
         """
         Called when state_day_trial_verdict state is set
         """
-        print("TRIAL VERDICT TODO !!!")
+        print("on_day_trial_verdict")
+        operation = Thread(target=self._on_day_trial_verdict_operations)
+        operation.start()
+
+    def on_day_trial_last_words(self):
+        """
+        Called when state_trial_last_words state is set
+        """
+        print("on_day_trial_last_words")
+        self._mafia_engine.send_message_everyone(Misc.STATES_STRING_SEPARATOR)
+        self._mafia_engine.send_message_everyone("*Un dernier mot ?*")
+        self._next_state = DelayedOperation(Timers.TIME_DAY_TRIAL_LAST_WORDS, self.day_trial_kill)
+        self._next_state.start()
+
+    def _on_day_trial_kill_operation(self):
+        """
+        Function to run the trial verdict
+        """
+        self._mafia_engine.send_message_everyone(Misc.STATES_STRING_SEPARATOR)
+        self._mafia_engine.send_message_everyone("*Exécution de {}...*".format(self._mafia_engine.player_trial.get_nickname()))
+        time.sleep(2.0)
+        self._mafia_engine.player_trial.set_dead()
+        self._mafia_engine.send_message_everyone("*{} est mort.*".format(self._mafia_engine.player_trial.get_nickname()))
+        time.sleep(2.0)
+        msg = "*{} était **{}**.*".format(self._mafia_engine.player_trial.get_nickname(),
+                                          self._mafia_engine.player_trial.get_role().name)
+        self._mafia_engine.send_message_everyone(msg)
+        time.sleep(1.0)
+        self._mafia_engine.send_message_everyone("*## Derniers mots*\n{}".format(self._mafia_engine.player_trial.get_last_will()))
+        time.sleep(2.0)
+        self._mafia_engine.player_trial = None
+        self._mafia_engine.send_message_everyone(Misc.STATES_STRING_SEPARATOR)
+        self.day_end()
+
+    def on_day_trial_kill(self):
+        """
+        Called when state_day_trial_kill state is set
+        """
+        print("on_day_trial_kill")
+        operation = Thread(target=self._on_day_trial_kill_operation)
+        operation.start()
+
+    def _on_day_end_operations(self):
+        """
+        Function to run the end of the day
+        """
+        self._mafia_engine.send_message_everyone("*Fin de la journée, revoyons-nous demain.*")
+        self._next_state = DelayedOperation(Timers.TIME_DAY_END, self.night)
+        self._next_state.start()
+
+    def on_day_end(self):
+        """
+        Called when state_day_end state is set
+        """
+        print("on_day_end")
+        operation = Thread(target=self._on_day_end_operations)
+        operation.start()
 
     def _on_night_operations(self):
         """
-        Function to run the end of the day and the night
+        Function to run the night
         """
-        self._mafia_engine.send_message_everyone("*Fin de la journée...*")
         self._mafia_engine.send_message_everyone(Misc.STATES_STRING_SEPARATOR)
         self._mafia_engine.send_message_everyone("**NUIT {}** - {} secondes"
                                                  .format(self._current_day, Timers.TIME_NIGHT))
+        for player in self._mafia_engine.players:
+            if player.get_role().alignment == Alignment.MAFIA:
+                # Display he can speak to the mafia
+                player.send_message_to_player("*Vous pouvez discuter avec les autres membres de la Mafia.*")
+
         # Wait and go to night resolution !
         self._next_state = DelayedOperation(Timers.TIME_NIGHT,
                                             self.night_sequence,
@@ -273,3 +390,10 @@ class GameState(StateMachine):
         print("on_night_sequence")
         operation = Thread(target=self._on_night_sequence_operations)
         operation.start()
+
+    def get_current_day(self) -> int:
+        """
+        Get the current day ID
+        :return: current day number
+        """
+        return self._current_day

@@ -16,5 +16,5 @@ class MafiaRole(BaseRole):
         self.color = Colors.MAFIA_COLOR
         self.goal = "Tuer tous les membres de la ville et tous vos opposants."
 
-        self.special_attributes = ["Suggérez une cible à éliminer avec la commande \"-target X\"",
+        self.special_attributes = ["Suggérez une cible à éliminer avec la commande \"-suggest X\"",
                                    "Vous pouvez parler à la Mafia durant la nuit"]

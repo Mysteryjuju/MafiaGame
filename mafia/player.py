@@ -20,7 +20,7 @@ class Player:
         self._nickname = None
         self._role = None
         self._house = None
-        self._last_will = None
+        self._last_will = ""
         self._death_note = None
         self._alive = True
         self._vote_id = None
@@ -118,3 +118,6 @@ class Player:
 
     def get_trial_vote(self):
         return self._trial_vote
+
+    def reset_trial_vote(self):
+        self._trial_vote = None
